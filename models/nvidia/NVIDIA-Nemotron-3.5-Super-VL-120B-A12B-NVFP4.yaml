@@ -3,7 +3,7 @@ meta:
   title: "NVIDIA Nemotron 3.5 Super VL"
   slug: "nemotron-3-5-super-vl"
   provider: "NVIDIA"
-  description: "120B total / 12B active vision-language model with NVFP4 and BF16 configurations across A100, H100, H200, GB200, DGX Spark, and RTX Pro 6000"
+  description: "120B total / 12B active vision-language model with NVFP4, FP8, BF16, and D-Spark configurations across A100, H100, H200, GB200, DGX Spark, and RTX Pro 6000"
   date_added: 2026-10-15
   date_updated: 2026-10-15
   tasks:
@@ -33,7 +33,7 @@ model:
 
 features:
   spec_decoding:
-    description: "Use the built-in MTP head, or the LiLiCorr draft on DGX Spark"
+    description: "Use MTP, LiLiCorr on DGX Spark or D-Spark"
     default_mode: mtp
     modes:
       mtp:
@@ -47,6 +47,13 @@ features:
             args: ["--speculative-config.method", "mtp", "--speculative-config.num_speculative_tokens", "5"]
           dgx_spark_gb10:
             args: ["--speculative-config.method", "mtp", "--speculative-config.num_speculative_tokens", "5", "--mamba-cache-mode", "align", "--chat-template-content-format", "string"]
+      dspark:
+        label: "D-Spark"
+        description: "External draft with up to eight speculative tokens"
+        args: ["--speculative-config", "{\"method\":\"dspark\",\"model\":\"RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B.dspark\",\"num_speculative_tokens\":8,\"draft_tensor_parallel_size\":1,\"draft_sample_method\":\"greedy\"}"]
+        hardware_overrides:
+          h100:
+            args: ["--speculative-config", "{\"method\":\"dspark\",\"model\":\"RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B.dspark\",\"num_speculative_tokens\":8,\"draft_tensor_parallel_size\":1,\"draft_sample_method\":\"greedy\"}", "--gpu-memory-utilization", "0.89", "--prefix-match-unit", "64", "--block-size", "64", "--compilation-config", "{\"max_cudagraph_capture_size\":192}", "--enable-expert-parallel", "--max-num-seqs", "128", "--max-model-len", "114688", "--max-num-batched-tokens", "16384", "--enable-prefix-caching", "--async-scheduling", "--mamba-backend", "flashinfer", "--mamba-ssm-cache-dtype", "float16", "--enable-mamba-cache-stochastic-rounding", "--mamba-cache-philox-rounds", "5", "--chat-template-content-format", "string", "--mamba-cache-mode", "align"]
       lillicorr:
         label: "LiLiCorr"
         description: "Separate DFlash draft checkpoint, seven tokens on DGX Spark"
@@ -171,6 +178,13 @@ variants:
         extra_args: ["--max-model-len", "16384", "--max-num-seqs", "128"]
       a100_80gb_2x:
         extra_args: ["--max-model-len", "8192", "--max-num-seqs", "512"]
+  fp8:
+    model_id: "RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-FP8"
+    precision: fp8
+    vram_minimum_gb: 155
+    description: "FP8 Dynamic W8A8; model-card baseline uses 2x H100 with MTP or D-Spark"
+    tp: { hopper: 2, blackwell: 1 }
+    extra_args: ["--gpu-memory-utilization", "0.89", "--prefix-match-unit", "64", "--block-size", "64", "--compilation-config", "{\"max_cudagraph_capture_size\":192}", "--enable-expert-parallel", "--max-num-seqs", "128", "--max-model-len", "114688", "--max-num-batched-tokens", "16384", "--enable-prefix-caching", "--async-scheduling", "--mamba-backend", "flashinfer", "--mamba-ssm-cache-dtype", "float16", "--enable-mamba-cache-stochastic-rounding", "--mamba-cache-philox-rounds", "5", "--chat-template-content-format", "string", "--mamba-cache-mode", "align", "--enable-mamba-fine-grained-prefix-cache"]
   bf16:
     model_id: "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16"
     precision: bf16
@@ -257,11 +271,58 @@ guide: |
   complete commands from the notebook when the full window is needed. The
   selectable configurations here retain shorter hardware-specific allocations.
 
+  ## FP8 quantization and D-Spark
+
+  The [RedHatAI FP8 checkpoint](https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-FP8)
+  uses compressed-tensors FP8 Dynamic: per-channel FP8 weights and dynamic
+  per-token FP8 activations for selected backbone and MTP linears. Vision and
+  other excluded tensors retain their original precision. The model card includes
+  the model-free LLM Compressor creation script; no calibration data is required.
+
+  Select **H100 / FP8** for the card's TP2, 114,688-token serving configuration.
+  MTP remains the default with three speculative tokens. The checkpoint's index
+  reports 128.76 GB of weights, giving a 155 GB hint with the 20% allowance.
+  This is a weight allowance; cache and draft memory also depend on the workload.
+
+  Select **D-Spark** under Speculative Decoding with **H100 / BF16** (TP4) or
+  **H100 / FP8** (TP2) to use the separate
+  [RedHatAI D-Spark draft](https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B.dspark).
+  This replaces MTP with `method=dspark`, eight speculative tokens, draft TP1,
+  and greedy draft sampling. The mode applies the draft card's serving settings,
+  on H100, including expert parallelism, async scheduling, and float16 Mamba cache.
+  On other hardware, D-Spark preserves the selected profile's serving settings.
+  These additions follow the model cards and have not been independently run
+  as part of this recipe change. The existing verified hardware badges refer
+  to the cookbook configurations above. D-Spark is available across the recipe's
+  eligible hardware and checkpoint variants, including NVFP4. Hardware eligibility
+  is not a claim of validation: size the verifier and draft memory together and
+  tune context and concurrency for the selected GPU. The FP8 variant uses the
+  same open hardware eligibility convention as the other Nemotron FP8 recipes.
+  H100 TP2 follows the model card; Hopper TP2 and Blackwell TP1 otherwise are
+  capacity-based starting points, not independently validated configurations.
+  The generated FP8 command retains the model card's CUDA FlashInfer Mamba
+  backend. Hardware eligibility does not establish that this backend runs on
+  every device; other platforms require a compatible runtime and backend.
+  Check verifier and draft memory together before using a smaller GPU profile.
+
+  Both RedHatAI serving examples set `--chat-template-content-format string`;
+  these profiles reproduce their text workload settings. They do not establish
+  image or video inference validation. The advertised 1M context is distinct
+  from the 114,688-token serving allocation.
+
+  For optional adaptive verification, add `"enable_adaptive_verification":true`
+  inside the generated D-Spark `--speculative-config` JSON. Eight is then the
+  maximum draft length, and the confidence head controls how many tokens are
+  verified per step. The card's adaptive-verification benchmark used 8x B300;
+  it is not enabled by default in this H100 recipe.
+
   ## Client usage
 
   Send requests to `http://127.0.0.1:8000/v1` with model
   `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4` or the BF16 model ID,
-  depending on the selected variant. The cookbook includes image and video
+  depending on the selected variant. For FP8 use
+  `RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-FP8`; the D-Spark draft
+  is not the served model ID. The cookbook includes image and video
   requests, tool calls, and reasoning output examples.
 
   ## References
@@ -270,3 +331,5 @@ guide: |
   - [NVFP4 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4)
   - [BF16 checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16)
   - [LiLiCorr draft checkpoint](https://huggingface.co/nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4-LiLiCorr)
+  - [RedHatAI FP8 model card](https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-FP8)
+  - [RedHatAI D-Spark model card](https://huggingface.co/RedHatAI/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B.dspark)
